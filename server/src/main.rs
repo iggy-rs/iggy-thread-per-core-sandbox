@@ -33,13 +33,21 @@ fn run() {
                                     let buf = vec![0; 10];
                                     let (n, buf) = reader.read_exact(buf).await;
                                     let n = n.unwrap();
-                                    println!("[Server] Read {} bytes data", n);
+                                    println!(
+                                        "[Server {:?}] Read {} bytes data",
+                                        std::thread::current().id(),
+                                        n
+                                    );
                                     if n == 0 {
                                         break;
                                     }
                                     let (written, _) = writer.write_all(buf).await;
                                     let written = written.unwrap();
-                                    println!("[Server] Written {} bytes data", written);
+                                    println!(
+                                        "[Server {:?}] Written {} bytes data",
+                                        std::thread::current().id(),
+                                        written
+                                    );
                                     if written != n {
                                         println!("Failed to write all data");
                                     }
