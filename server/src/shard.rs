@@ -1,18 +1,52 @@
-use std::{sync::atomic::{AtomicUsize, Ordering}, task::Poll};
+use std::{
+    cell::Cell,
+    sync::{atomic::AtomicUsize, Arc},
+    task::Poll,
+};
 
 use futures::{task::AtomicWaker, Stream};
 use sharded_queue::ShardedQueue;
 
-pub struct Shard<'a, T> {
-    pub receiver: Option<Receiver<'a , T>>,
-    pub senders: Vec<Sender <'a, T>>,
+pub struct ShardMesh<T> {
+    pub channels: Vec<Arc<ShardedChannel<T>>>,
+}
+
+impl<T> ShardMesh<T> {
+    pub fn new(nr_peers: usize) -> Self {
+        let mut channels = Vec::new();
+        for _ in 0..nr_peers {
+            channels.push(Arc::new(ShardedChannel::new(nr_peers)));
+        }
+        Self { channels }
+    }
+
+    pub fn shard(&self, shard_id: usize) -> Shard<T> {
+        let senders = self
+            .channels
+            .iter()
+            .map(|channel| channel.sender())
+            .collect();
+        let (_, receiver) = self.channels[shard_id].unbounded();
+
+        Shard {
+            receiver: Cell::new(Some(receiver)),
+            senders,
+            shard_id,
+        }
+    }
+}
+
+pub struct Shard<T> {
+    pub receiver: Cell<Option<Receiver<T>>>,
+    pub senders: Vec<Sender<T>>,
     pub shard_id: usize,
 }
 
-impl<'a, T> Shard<'a, T> {
-    pub fn receiver(mut self) -> Option<Receiver<'a, T>> {
+impl<T> Shard<T> {
+    pub fn receiver(&self) -> Option<Receiver<T>> {
         self.receiver.take()
     }
+
     pub fn send_to(&self, shard_id: usize, data: T) {
         let sender = self.senders.get(shard_id).unwrap();
         sender.send(data);
@@ -20,17 +54,20 @@ impl<'a, T> Shard<'a, T> {
 }
 
 #[derive(Clone)]
-pub struct Receiver<'a, T> {
-    channel: &'a ShardedChannel<T>,
+pub struct Receiver<T> {
+    channel: Arc<ShardedChannel<T>>,
 }
 
-pub struct Sender<'a, T> {
-    channel: &'a ShardedChannel<T>,
+#[derive(Clone)]
+pub struct Sender<T> {
+    channel: Arc<ShardedChannel<T>>,
 }
 
-impl<'a, T> Sender<'a, T> {
+impl<T> Sender<T> {
     pub fn send(&self, data: T) {
-        self.channel.task_queue.fetch_add(1, Ordering::Relaxed);
+        self.channel
+            .task_queue
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.channel.queue.push_back(data);
         self.channel.waker.wake();
     }
@@ -41,26 +78,43 @@ pub struct ShardedChannel<T> {
     task_queue: AtomicUsize,
     waker: AtomicWaker,
 }
-pub trait ShardedChannelsSplit<'a, T> {
-    fn unbounded(&'a self) -> (Sender<'a, T>, Receiver<'a, T>);
 
-    fn sender(&'a self) -> Sender<'a, T>;
+impl<T> ShardedChannel<T> {
+    pub fn new(max_concurrent_thread_count: usize) -> Self {
+        let waker = AtomicWaker::new();
+
+        Self {
+            queue: ShardedQueue::new(max_concurrent_thread_count),
+            task_queue: AtomicUsize::new(0),
+            waker,
+        }
+    }
 }
 
-impl<'a, T> ShardedChannelsSplit<'a, T> for ShardedChannel<T> {
-    fn unbounded(&'a self) -> (Sender<'a, T>, Receiver<'a, T>) {
+pub trait ShardedChannelsSplit<T> {
+    fn unbounded(&self) -> (Sender<T>, Receiver<T>);
+
+    fn sender(&self) -> Sender<T>;
+}
+
+impl<T> ShardedChannelsSplit<T> for Arc<ShardedChannel<T>> {
+    fn unbounded(&self) -> (Sender<T>, Receiver<T>) {
         let tx = self.sender();
-        let rx = Receiver { channel: self };
+        let rx = Receiver {
+            channel: Arc::clone(self),
+        };
 
         (tx, rx)
     }
 
-    fn sender(&'a self) -> Sender<'a, T> {
-        Sender { channel: self }
+    fn sender(&self) -> Sender<T> {
+        Sender {
+            channel: Arc::clone(self),
+        }
     }
 }
 
-impl<'a, T> Stream for Receiver<'a, T> {
+impl<T> Stream for Receiver<T> {
     type Item = T;
 
     fn poll_next(
@@ -72,12 +126,12 @@ impl<'a, T> Stream for Receiver<'a, T> {
         let old = self
             .channel
             .task_queue
-            .load(Ordering::Relaxed);
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         if old > 0 {
             self.channel
                 .task_queue
-                .fetch_sub(1, Ordering::Relaxed);
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             let item = self.channel.queue.pop_front_or_spin_wait_item();
             Poll::Ready(Some(item))
         } else {
