@@ -1,18 +1,13 @@
-pub mod shard;
-
 use futures::StreamExt;
 use monoio::{
     io::{AsyncReadRentExt, Splitable},
     net::{TcpListener, TcpStream},
 };
-use rand::{thread_rng, Rng};
-use shard::{Receiver, Shard};
-use std::{
-    io::{stdin, BufRead},
-    rc::Rc,
-    thread::available_parallelism,
-    time::Duration,
+use server::{
+    command::command::Command,
+    shard::shard::{Receiver, Shard},
 };
+use std::{rc::Rc, thread::available_parallelism};
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -22,16 +17,15 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn run() {
-    use std::sync::Arc;
-
-    use crate::shard::ShardMesh;
+    use server::shard::shard::ShardMesh;
+    use std::{rc::Rc, sync::Arc};
 
     //use monoio::net::TcpListener;
     const ADDRESS: &str = "127.0.0.1:50000";
     let available_threads = available_parallelism().unwrap().get();
     println!("Available threads: {available_threads}");
 
-    let mesh = Arc::new(ShardMesh::<u32>::new(available_threads));
+    let mesh = Arc::new(ShardMesh::<(u32, Command)>::new(available_threads));
 
     let mut threads = Vec::new();
     for cpu in 0..available_threads {
@@ -44,17 +38,15 @@ fn run() {
                 .build()
                 .unwrap();
 
-            let shard = mesh.shard(cpu);
+            let shard = Rc::new(mesh.shard(cpu));
             rt.block_on(async move {
                 let receiver = shard.receiver().unwrap();
-                /*
                 let listener = TcpListener::bind(ADDRESS)
                     .unwrap_or_else(|_| panic!("[Server] Unable to bind to {ADDRESS}"));
-                */
                 println!("[Server] Bind ready with address {ADDRESS}");
                 monoio::select! {
-                    res = console_input(shard, available_threads) => { res.unwrap()},
-                    _ = processing(receiver) => {}
+                    res = listen(shard, listener) => { res.map_err(|err| println!("[Server] Error listening: {err}")).unwrap()},
+                    _ = process_command(receiver) => {}
                 }
             });
         });
@@ -66,48 +58,53 @@ fn run() {
     }
 }
 
-async fn processing(mut receiver: Receiver<u32>) {
+async fn process_command(mut receiver: Receiver<(u32, Command)>) {
     loop {
-        //let mut receiver = receiver.clone();
-        if let Some(val) = receiver.next().await {
+        if let Some((partition_id, command)) = receiver.next().await {
             let thread_id = std::thread::current().id();
-            println!("[Server] Received data: {} on thread: {:?}", val, thread_id);
-        }
-    }
-}
-
-async fn console_input(shard: Shard<u32>, threads_count: usize) -> std::io::Result<()> {
-    loop {
-        //let mut stdin = stdin().lock();
-        //let mut line = String::new();
-        //stdin.read_line(&mut line).unwrap();
-        //let shard_id = line.trim().parse::<usize>().unwrap();
-        monoio::time::sleep(Duration::from_secs(2)).await;
-        let shard_id: usize = thread_rng().gen_range(0..threads_count);
-        println!("Sending data to shard: {}", shard_id);
-            shard.send_to(shard_id, 69);
-    }
-}
-
-async fn listen(listener: TcpListener) -> std::io::Result<()> {
-    match listener.accept().await {
-        Ok((stream, _)) => {
-            println!("[Server] Accepted connection");
-            monoio::spawn(async move {
-                if let Err(e) = handle_connection(stream).await {
-                    println!("Error handling connection: {e}")
+            println!(
+                "[Server] Received command {command} for partition {partition_id} on thread: {thread_id:?}");
+            match command {
+                Command::CreatePartition() => {
+                    println!("[Server] Creating partition {partition_id}");
                 }
-            });
-        }
-        Err(e) => {
-            println!("[Server] Error accepting connection: {e}");
-            return Err(e);
+                Command::SendToPartition(data) => {
+                    println!(
+                        "[Server] Sending data to partition {partition_id}, data: {data:?} bytes");
+                }
+                Command::ReadFromPartition() => {
+                    println!("[Server] Reading from partition {partition_id}");
+                }
+
+            }
         }
     }
-    Ok(())
 }
 
-async fn handle_connection(stream: TcpStream) -> Result<(), std::io::Error> {
+async fn listen(shard: Rc<Shard<(u32, Command)>>, listener: TcpListener) -> std::io::Result<()> {
+    loop {
+        let shard = shard.clone();
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                println!("[Server] Accepted connection");
+                monoio::spawn(async move {
+                    if let Err(e) = handle_connection(shard, stream).await {
+                        println!("Error handling connection: {e}")
+                    }
+                });
+            }
+            Err(e) => {
+                println!("[Server] Error accepting connection: {e}");
+                return Err(e);
+            }
+        }
+    }
+}
+
+async fn handle_connection(
+    shard: Rc<Shard<(u32, Command)>>,
+    stream: TcpStream,
+) -> Result<(), std::io::Error> {
     let (mut reader, _) = stream.into_split();
     let buf = Box::new([0u8; 4]);
     let (n, buf) = reader.read_exact(buf).await;
@@ -118,11 +115,25 @@ async fn handle_connection(stream: TcpStream) -> Result<(), std::io::Error> {
         n
     );
 
-    let shard_id = u32::from_le_bytes(*buf);
-    println!(
-        "[Server {:?}] Received shard id: {}",
-        std::thread::current().id(),
-        shard_id
-    );
+    let command_id = u32::from_le_bytes(*buf);
+    let (n, buf) = reader.read_exact(buf).await;
+    let _ = n?;
+    let partition_id = u32::from_le_bytes(*buf);
+    if command_id == 1 {
+        let (n, buf) = reader.read_exact(buf).await;
+        let _ = n?;
+        let data_len = u32::from_le_bytes(*buf);
+
+        let data = vec![0u8; data_len as usize];
+        let (n, data) = reader.read_exact(data).await;
+        let _ = n?;
+
+        let command = Command::SendToPartition(data);
+        shard.send_to(partition_id as usize, (partition_id, command));
+        return Ok(());
+    }
+    let command = Command::from(command_id);
+    shard.send_to(partition_id as usize, (partition_id, command));
+
     Ok(())
 }
