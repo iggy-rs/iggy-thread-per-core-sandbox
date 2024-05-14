@@ -8,3 +8,4 @@ bytes = "1.6.0"
 monoio = { version = "0.2.3", features = ["async-cancel", "sync", "signal", "tracing", "zero-copy", "bytes", "legacy", "macros", "utils", "io-uring", "iouring"] }
 monoio-native-tls = {version = "0.3.0"}
 serde = { version = "1.0.200", features = ["derive", "rc"] }
+rand = "0.9.0-alpha.1"

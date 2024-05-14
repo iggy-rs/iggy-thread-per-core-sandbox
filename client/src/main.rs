@@ -1,3 +1,5 @@
+use bytes::BufMut;
+use monoio::io::AsyncReadRent;
 use std::thread::available_parallelism;
 
 #[cfg(target_os = "linux")]
@@ -13,10 +15,7 @@ fn run() {
     println!("Available threads: {available_threads}");
 
     let mut threads = Vec::new();
-    use monoio::{
-        io::{AsyncReadRentExt, AsyncWriteRentExt},
-        net::TcpStream,
-    };
+    use monoio::{io::AsyncWriteRentExt, net::TcpStream};
 
     for i in 1..=available_threads {
         let thread = std::thread::spawn(move || {
@@ -33,11 +32,24 @@ fn run() {
                     .await
                     .expect("[Client] Unable to connect to server");
                 loop {
-                    let buf: Vec<u8> = vec![97; 10];
-                    let (r, buf) = conn.write_all(buf).await;
-                    println!("[Client #{i}] Written {} bytes data", r.unwrap());
-                    let (r, _) = conn.read_exact(buf).await;
-                    println!("[Client #{i}] Read {} bytes data", r.unwrap());
+                    let random_shard = rand::random::<u32>() % available_threads as u32;
+                    let mut bytes = Vec::with_capacity(4);
+                    bytes.put_u32_le(0);
+                    bytes.put_u32_le(random_shard);
+                    let (size, buf) = conn.write_all(bytes).await;
+                    if size.is_err() {
+                        println!("[Client #{i}] Connection closed");
+                        break;
+                    }
+
+                    println!("[Client #{i}] Written {} bytes data", size.unwrap());
+                    let (size, _) = conn.read(buf).await;
+                    if size.is_err() {
+                        println!("[Client #{i}] Connection closed");
+                        break;
+                    }
+
+                    println!("[Client #{i}] Read {} bytes data", size.unwrap());
                 }
             });
         });
