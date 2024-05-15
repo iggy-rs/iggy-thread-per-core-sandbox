@@ -43,13 +43,21 @@ fn run() {
                     }
 
                     println!("[Client #{i}] Written {} bytes data", size.unwrap());
-                    let (size, _) = conn.read(buf).await;
+                    let (size, buf) = conn.read(buf).await;
                     if size.is_err() {
                         println!("[Client #{i}] Connection closed");
                         break;
                     }
+                    let size = size.unwrap();
+                    println!("[Client #{i}] Read {} bytes data", size);
 
-                    println!("[Client #{i}] Read {} bytes data", size.unwrap());
+                    if size == 0 {
+                        continue;
+                    }
+                    let resp_value = u32::from_le_bytes(buf.try_into().unwrap());
+                    println!(
+                        "[Client #{i}] Received response from shard {random_shard}: {resp_value}"
+                    )
                 }
             });
         });
