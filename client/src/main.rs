@@ -33,9 +33,10 @@ fn run() {
                     .expect("[Client] Unable to connect to server");
                 loop {
                     let random_shard = rand::random::<u32>() % available_threads as u32;
-                    let mut bytes = Vec::with_capacity(4);
+                    let mut bytes = Vec::with_capacity(22);
                     bytes.put_u32_le(0);
                     bytes.put_u32_le(random_shard);
+                    bytes.extend(b"Hello, heaven!");
                     let (size, buf) = conn.write_all(bytes).await;
                     if size.is_err() {
                         println!("[Client #{i}] Connection closed");
@@ -57,7 +58,7 @@ fn run() {
                     let resp_value = u32::from_le_bytes(buf.try_into().unwrap());
                     println!(
                         "[Client #{i}] Received response from shard {random_shard}: {resp_value}"
-                    )
+                    );
                 }
             });
         });
