@@ -1,13 +1,14 @@
 use futures::StreamExt;
 use monoio::{
-    io::{
-        AsyncReadRentExt, AsyncWriteRentExt
-    },
+    io::{AsyncReadRentExt, AsyncWriteRentExt},
     net::{TcpListener, TcpStream},
 };
 use server::{
     command::command::Command,
-    shard::shard::{Receiver, Shard},
+    shard::{
+        message::Message,
+        shard::{Receiver, Shard},
+    },
 };
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::{rc::Rc, thread::available_parallelism};
@@ -20,7 +21,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn run() {
-    use server::shard::shard::ShardMesh;
+    use server::shard::{message::Message, shard::ShardMesh};
     use std::{rc::Rc, sync::Arc};
 
     //use monoio::net::TcpListener;
@@ -29,7 +30,7 @@ fn run() {
     println!("Available threads: {available_threads}");
 
     //TODO - Create a type for the message sent via channel, instead of using this triplet
-    let mesh = Arc::new(ShardMesh::<(u32, Command, i32)>::new(available_threads));
+    let mesh = Arc::new(ShardMesh::<Message>::new(available_threads));
 
     let mut threads = Vec::new();
     for cpu in 0..available_threads {
@@ -62,12 +63,15 @@ fn run() {
     }
 }
 
-async fn process_command(cpu: usize, mut receiver: Receiver<(u32, Command, i32)>) {
+async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
     loop {
-        if let Some((partition_id, command, fd)) = receiver.next().await {
+        if let Some(message) = receiver.next().await {
             // Safety: File descriptor might not always be valid.
             // Given a case where the thread handling the connection might close the descriptor during panic.
             // Requires further validation whether this approach is completly safe.
+            let fd = message.descriptor;
+            let partition_id = message.partition_id;
+            let command = message.command;
             let mut stream = TcpStream::from_std(unsafe { std::net::TcpStream::from_raw_fd(fd) })
                 .map_err(|err| println!("[Server] Error creating TcpStream from fd: {err}"))
                 .unwrap();
@@ -78,7 +82,7 @@ async fn process_command(cpu: usize, mut receiver: Receiver<(u32, Command, i32)>
                 Command::CreatePartition() => {
                     println!("[Server] Creating partition {partition_id}");
                     let recv_buf = Box::new([0u8; 14]);
-                    let(n , recv_buf) = stream.read_exact(recv_buf).await;
+                    let (n, recv_buf) = stream.read_exact(recv_buf).await;
                     n.unwrap();
 
                     let recv = std::str::from_utf8(&*recv_buf).unwrap();
@@ -101,7 +105,7 @@ async fn process_command(cpu: usize, mut receiver: Receiver<(u32, Command, i32)>
 
 async fn listen(
     cpu: usize,
-    shard: Rc<Shard<(u32, Command, i32)>>,
+    shard: Rc<Shard<Message>>,
     listener: TcpListener,
 ) -> std::io::Result<()> {
     loop {
@@ -125,7 +129,7 @@ async fn listen(
 
 async fn handle_connection(
     cpu: usize,
-    shard: Rc<Shard<(u32, Command, i32)>>,
+    shard: Rc<Shard<Message>>,
     mut stream: TcpStream,
 ) -> Result<(), std::io::Error> {
     let buf = Box::new([0u8; 4]);
@@ -163,7 +167,8 @@ async fn handle_connection(
 
         let command = Command::SendToPartition(data);
         let fd = stream.into_raw_fd();
-        shard.send_to(partition_id as usize, (partition_id, command, fd));
+        let message = Message::new(partition_id, command, fd);
+        shard.send_to(partition_id as usize, message);
         return Ok(());
     }
     let command = Command::from(command_id);
@@ -172,6 +177,7 @@ async fn handle_connection(
         "[Server {:?}] Sending command {command} to shard ID: {shard_id} from CPU: #{cpu}",
         std::thread::current().id(),
     );
-    shard.send_to(shard_id, (partition_id, command, fd));
+    let message = Message::new(partition_id, command, fd);
+    shard.send_to(shard_id, message);
     Ok(())
 }
