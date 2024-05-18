@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use monoio::{
-    io::{AsyncReadRentExt, AsyncWriteRentExt},
+    io::{AsyncReadRentExt, AsyncWriteRent, AsyncWriteRentExt},
     net::{TcpListener, TcpStream},
 };
 use server::{
@@ -10,8 +10,13 @@ use server::{
         shard::{Receiver, Shard},
     },
 };
-use std::os::fd::{FromRawFd, IntoRawFd};
+use std::{
+    os::fd::{FromRawFd, IntoRawFd},
+    path,
+};
 use std::{rc::Rc, thread::available_parallelism};
+
+const PARTITIONS_PATH: &str = "storage/partitions";
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -81,14 +86,10 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
             match command {
                 Command::CreatePartition() => {
                     println!("[Server] Creating partition {partition_id}");
-                    let recv_buf = Box::new([0u8; 14]);
-                    let (n, recv_buf) = stream.read_exact(recv_buf).await;
-                    n.unwrap();
-
-                    let recv = std::str::from_utf8(&*recv_buf).unwrap();
-                    assert_eq!(recv, "Hello, heaven!");
-                    let resp_buf = Box::new(69u32.to_le_bytes());
-                    stream.write_all(resp_buf).await.0.unwrap();
+                    let path = format!("{PARTITIONS_PATH}/{partition_id}");
+                    monoio::fs::File::create(&path).await.unwrap();
+                    println!("[Server] Created partition {partition_id} at path: {path}");
+                    stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
                 }
                 Command::SendToPartition(data) => {
                     println!(
@@ -150,7 +151,8 @@ async fn handle_connection(
         std::thread::current().id(),
     );
 
-    let shard_id = partition_id as usize;
+    let available_threads = available_parallelism().unwrap().get();
+    let shard_id = partition_id as usize % available_threads;
     if command_id == 1 {
         let (n, buf) = stream.read_exact(buf).await;
         let _ = n?;
