@@ -87,12 +87,13 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                 "[Server] Received command {command} for partition {partition_id} on thread: {thread_id:?}, CPU: #{cpu}");
             match command {
                 Command::CreatePartition() => {
-                    let mut stream =
-                        ManuallyDrop::new(TcpStream::from_std(unsafe { std::net::TcpStream::from_raw_fd(fd) })
+                    let mut stream = ManuallyDrop::new(
+                        TcpStream::from_std(unsafe { std::net::TcpStream::from_raw_fd(fd) })
                             .map_err(|err| {
                                 println!("[Server] Error creating TcpStream from fd: {err}")
                             })
-                            .unwrap());
+                            .unwrap(),
+                    );
                     println!("[Server] Creating partition {partition_id}");
                     /*
                     let path = format!("{PARTITIONS_PATH}/{partition_id}");
@@ -109,7 +110,11 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                     */
                     // write the response
                     //stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
-                    stream.write_all(Box::new(69u32.to_le_bytes())).await.0.unwrap();
+                    stream
+                        .write_all(Box::new(69u32.to_le_bytes()))
+                        .await
+                        .0
+                        .unwrap();
                 }
                 Command::SendToPartition(data) => {
                     println!(
@@ -167,8 +172,8 @@ async fn handle_connection(
     shard: Rc<Shard<Message>>,
     mut stream: TcpStream,
 ) -> Result<(), std::io::Error> {
+    let threads = available_parallelism().unwrap().get();
     loop {
-        let fd = stream.as_raw_fd();
         let buf = Box::new([0u8; 4]);
         let (n, buf) = stream.read_exact(buf).await;
         let n = n?;
@@ -186,10 +191,29 @@ async fn handle_connection(
         "[Server {:?}] Received command with ID: {command_id} for partition {partition_id} on CPU: #{cpu}",
         std::thread::current().id(),
     );
+        let shard_id = partition_id as usize % threads;
+        if command_id == 1 {
+            let (n, buf) = stream.read_exact(buf).await;
+            let _ = n?;
+            let data_len = u32::from_le_bytes(*buf);
 
-        let available_threads = available_parallelism().unwrap().get();
-        let shard_id = partition_id as usize % available_threads;
+            let data = vec![0u8; data_len as usize];
+            let (n, data) = stream.read_exact(data).await;
+            let _ = n?;
+
+            println!(
+            "[Server {:?}] Sending data to shard ID: {shard_id}, from CPU: #{cpu}, data: {data:?} bytes",
+            std::thread::current().id(),
+        );
+
+            let command = Command::SendToPartition(data);
+            let fd = stream.as_raw_fd();
+            let message = Message::new(partition_id, command, fd);
+            shard.send_to(shard_id, message);
+            continue;
+        }
         let command = Command::from(command_id);
+        let fd = stream.as_raw_fd();
         println!(
             "[Server {:?}] Sending command {command} to shard ID: {shard_id} from CPU: #{cpu}",
             std::thread::current().id(),
