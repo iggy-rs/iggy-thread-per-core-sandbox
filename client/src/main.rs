@@ -22,12 +22,16 @@ async fn run() {
     println!("[Client] Connected to server");
     // Write down the steps
     // Create partition with random id
-    let mut rng = rand::thread_rng();
-    let partition_id = rng.gen_range(0..32);
-    let mut buf = Vec::with_capacity(8);
-    buf.put_u32_le(0);
-    buf.put_u32_le(partition_id);
-    conn.write_all(buf).await.0.unwrap();
+    loop {
+        let mut rng = rand::thread_rng();
+        let partition_id = rng.gen_range(0..32);
+        let mut buf = Vec::with_capacity(8);
+        buf.put_u32_le(0);
+        buf.put_u32_le(partition_id);
+        conn.write_all(buf).await.0.unwrap();
+        let response = conn.read_u32_le().await.unwrap();
+        println!("Received response from server: {response}");
+    }
 
     /*
     // Read the response
@@ -38,6 +42,7 @@ async fn run() {
     println!("Received response from server, for create partition command: {recv}");
     */
     // Send data to partition in a loop
+    /*
     let data = b"Hello, World";
     let mut buf = Vec::with_capacity(12 + data.len());
     buf.put_u32_le(1);
@@ -45,6 +50,7 @@ async fn run() {
     buf.put_u32_le(data.len() as u32);
     buf.put(data.as_slice());
     conn.write_all(buf).await.0.unwrap();
+    */
     // Read response
     /*
     let recv = conn.read_u32_le().await.unwrap();
