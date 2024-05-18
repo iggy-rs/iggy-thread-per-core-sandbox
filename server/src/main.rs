@@ -1,5 +1,6 @@
 use futures::StreamExt;
 use monoio::{
+    fs::OpenOptions,
     io::{AsyncReadRentExt, AsyncWriteRent, AsyncWriteRentExt},
     net::{TcpListener, TcpStream},
 };
@@ -12,7 +13,7 @@ use server::{
 };
 use std::{
     os::fd::{FromRawFd, IntoRawFd},
-    path,
+    path::{self, Path},
 };
 use std::{rc::Rc, thread::available_parallelism};
 
@@ -87,14 +88,35 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                 Command::CreatePartition() => {
                     println!("[Server] Creating partition {partition_id}");
                     let path = format!("{PARTITIONS_PATH}/{partition_id}");
+                    let file_exists = Path::new(&path).exists();
+                    if file_exists {
+                        stream
+                            .write(Box::new(420u32.to_le_bytes()))
+                            .await
+                            .0
+                            .unwrap();
+                    }
                     monoio::fs::File::create(&path).await.unwrap();
                     println!("[Server] Created partition {partition_id} at path: {path}");
-                    stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
+                    // write the response
+                    //stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
                 }
                 Command::SendToPartition(data) => {
                     println!(
                         "[Server] Sending data to partition {partition_id}, data: {data:?} bytes"
                     );
+                    let path = format!("{PARTITIONS_PATH}/{partition_id}");
+                    let file = OpenOptions::new()
+                        .write(true)
+                        .append(true)
+                        .open(&path)
+                        .await
+                        .unwrap();
+                    let stat = std::fs::metadata(&path).unwrap();
+                    let len = stat.len();
+                    file.write_all_at(data, len).await.0.unwrap();
+                    // write the response
+                    //stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
                 }
                 Command::ReadFromPartition() => {
                     println!("[Server] Reading from partition {partition_id}");
@@ -157,10 +179,12 @@ async fn handle_connection(
         let (n, buf) = stream.read_exact(buf).await;
         let _ = n?;
         let data_len = u32::from_le_bytes(*buf);
+        println!("Reached there");
 
         let data = vec![0u8; data_len as usize];
         let (n, data) = stream.read_exact(data).await;
         let _ = n?;
+        println!("data: {data:?}");
 
         println!(
             "[Server {:?}] Sending data to shard ID: {shard_id}, from CPU: #{cpu}, data: {data:?} bytes",
@@ -170,7 +194,7 @@ async fn handle_connection(
         let command = Command::SendToPartition(data);
         let fd = stream.into_raw_fd();
         let message = Message::new(partition_id, command, fd);
-        shard.send_to(partition_id as usize, message);
+        shard.send_to(shard_id as usize, message);
         return Ok(());
     }
     let command = Command::from(command_id);
