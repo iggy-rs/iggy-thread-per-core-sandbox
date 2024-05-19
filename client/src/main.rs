@@ -8,8 +8,6 @@ const DATA: &[u8; 13] = b"Hello, World!";
 
 #[cfg(target_os = "linux")]
 async fn run() {
-    use std::rc::Rc;
-
     use bytes::BufMut;
     use monoio::{
         io::{AsyncReadRentExt, AsyncWriteRentExt},
@@ -31,7 +29,7 @@ async fn run() {
     buf.put_u32_le(partition_id);
     conn.write_all(buf).await.0.unwrap();
     let response = conn.read_u32_le().await.unwrap();
-    println!("[Client] Received response from server for create_partition command: {response}");
+    println!("[Client] Received response from server for create_partition commands: {response}");
 
     let mut offset: u64 = 0;
     loop {
@@ -44,7 +42,7 @@ async fn run() {
         conn.write_all(buf).await.0.unwrap();
         // receive response from server
         let response = conn.read_u32_le().await.unwrap();
-        println!("[Client] Received response from server for send_data command: {response}");
+        println!("[Client] Received response from server for send_data commands: {response}");
 
         let mut buf = Vec::with_capacity(16);
         // Here we will continuously fetch data from the server.
@@ -56,13 +54,13 @@ async fn run() {
         let response = conn.read_u32_le().await.unwrap();
         let data_len = conn.read_u64_le().await.unwrap();
         let data = vec![0; data_len as usize];
-        let (n, data) = conn.read_exact( data).await;
+        let (n, data) = conn.read_exact(data).await;
         let n = n.unwrap();
         assert_eq!(n, data_len as usize);
         assert_eq!(data, DATA);
         let data = std::str::from_utf8(&data).unwrap();
         println!(
-            "[Client] Received response from server for read_data command: {response}, data: {data}");
+            "[Client] Received response from server for read_data commands: {response}, data: {data}");
         offset += 13;
 
         monoio::time::sleep(std::time::Duration::from_millis(500)).await;

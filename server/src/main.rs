@@ -1,27 +1,21 @@
 use futures::StreamExt;
 use monoio::{
     fs::OpenOptions,
-    io::{
-        as_fd::{AsReadFd, AsWriteFd},
-        AsyncReadRentExt, AsyncWriteRent, AsyncWriteRentExt,
-    },
+    io::{AsyncReadRentExt, AsyncWriteRent, AsyncWriteRentExt},
     net::{TcpListener, TcpStream},
 };
 use server::{
-    command::command::Command,
-    shard::{
+    commands::command::Command,
+    shards::{
         message::Message,
         shard::{Receiver, Shard},
     },
 };
-use std::{mem::ManuallyDrop, os::fd::AsRawFd};
-use std::{
-    os::fd::{FromRawFd, IntoRawFd},
-    path::{self, Path},
-};
+use std::os::fd::AsRawFd;
+use std::{os::fd::FromRawFd, path::Path};
 use std::{rc::Rc, thread::available_parallelism};
 
-const PARTITIONS_PATH: &str = "storage/partitions";
+const PARTITIONS_PATH: &str = "local_data/storage/partitions";
 const READ_LENGTH_EXACT: usize = 13;
 
 #[cfg(target_os = "linux")]
@@ -32,13 +26,16 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn run() {
-    use server::shard::{message::Message, shard::ShardMesh};
+    use server::shards::{message::Message, shard::ShardMesh};
     use std::{rc::Rc, sync::Arc};
 
     //use monoio::net::TcpListener;
     const ADDRESS: &str = "127.0.0.1:50000";
     let available_threads = available_parallelism().unwrap().get();
     println!("Available threads: {available_threads}");
+    if !Path::new(PARTITIONS_PATH).exists() {
+        std::fs::create_dir_all(PARTITIONS_PATH).unwrap();
+    }
 
     //TODO - Create a type for the message sent via channel, instead of using this triplet
     let mesh = Arc::new(ShardMesh::<Message>::new(available_threads));
@@ -85,7 +82,7 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
             let command = message.command;
             let thread_id = std::thread::current().id();
             println!(
-                "[Server] Received command {command} for partition {partition_id} on thread: {thread_id:?}, CPU: #{cpu}");
+                "[Server] Received commands {command} for partition {partition_id} on thread: {thread_id:?}, CPU: #{cpu}");
             let mut stream = TcpStream::from_std(unsafe { std::net::TcpStream::from_raw_fd(fd) })
                 .map_err(|err| println!("[Server] Error creating TcpStream from fd: {err}"))
                 .unwrap();
@@ -191,7 +188,7 @@ async fn handle_connection(
         let _ = n?;
         let partition_id = u32::from_le_bytes(*buf);
         println!(
-        "[Server {:?}] Received command with ID: {command_id} for partition {partition_id} on CPU: #{cpu}",
+        "[Server {:?}] Received commands with ID: {command_id} for partition {partition_id} on CPU: #{cpu}",
         std::thread::current().id(),
     );
         let shard_id = partition_id as usize % threads;
@@ -206,7 +203,7 @@ async fn handle_connection(
 
             let stringify_data = std::str::from_utf8(&data).unwrap();
             println!(
-            "[Server {:?}] Sending data to shard ID: {shard_id}, from CPU: #{cpu}, data: {stringify_data}",
+            "[Server {:?}] Sending data to shards ID: {shard_id}, from CPU: #{cpu}, data: {stringify_data}",
             std::thread::current().id(),
         );
 
@@ -220,7 +217,7 @@ async fn handle_connection(
             let command = Command::ReadFromPartition(offset);
             let fd = unsafe { libc::dup(stream.as_raw_fd()) };
             println!(
-                "[Server {:?}] Sending command {command} to shard ID: {shard_id} from CPU: #{cpu}",
+                "[Server {:?}] Sending commands {command} to shards ID: {shard_id} from CPU: #{cpu}",
                 std::thread::current().id(),
             );
             let message = Message::new(partition_id, command, fd);
@@ -230,7 +227,7 @@ async fn handle_connection(
         let command = Command::from(command_id);
         let fd = unsafe { libc::dup(stream.as_raw_fd()) };
         println!(
-            "[Server {:?}] Sending command {command} to shard ID: {shard_id} from CPU: #{cpu}",
+            "[Server {:?}] Sending commands {command} to shards ID: {shard_id} from CPU: #{cpu}",
             std::thread::current().id(),
         );
         let message = Message::new(partition_id, command, fd);

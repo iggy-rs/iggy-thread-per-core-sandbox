@@ -1,2 +1,2 @@
-pub mod command;
-pub mod shard;
+pub mod commands;
+pub mod shards;

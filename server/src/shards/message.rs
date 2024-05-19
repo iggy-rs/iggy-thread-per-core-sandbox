@@ -1,4 +1,4 @@
-use crate::command::command::Command;
+use crate::commands::command::Command;
 
 pub struct Message {
     pub partition_id: u32,
