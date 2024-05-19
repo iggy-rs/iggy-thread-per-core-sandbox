@@ -87,13 +87,12 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                 "[Server] Received command {command} for partition {partition_id} on thread: {thread_id:?}, CPU: #{cpu}");
             match command {
                 Command::CreatePartition() => {
-                    let mut stream = ManuallyDrop::new(
+                    let mut stream = 
                         TcpStream::from_std(unsafe { std::net::TcpStream::from_raw_fd(fd) })
                             .map_err(|err| {
                                 println!("[Server] Error creating TcpStream from fd: {err}")
                             })
-                            .unwrap(),
-                    );
+                            .unwrap();
                     println!("[Server] Creating partition {partition_id}");
                     /*
                     let path = format!("{PARTITIONS_PATH}/{partition_id}");
@@ -207,13 +206,13 @@ async fn handle_connection(
         );
 
             let command = Command::SendToPartition(data);
-            let fd = stream.as_raw_fd();
+            let fd = unsafe { libc::dup(stream.as_raw_fd()) };
             let message = Message::new(partition_id, command, fd);
             shard.send_to(shard_id, message);
             continue;
         }
         let command = Command::from(command_id);
-        let fd = stream.as_raw_fd();
+        let fd = unsafe { libc::dup(stream.as_raw_fd()) };
         println!(
             "[Server {:?}] Sending command {command} to shard ID: {shard_id} from CPU: #{cpu}",
             std::thread::current().id(),

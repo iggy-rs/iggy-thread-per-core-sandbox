@@ -1,5 +1,5 @@
 #[cfg(target_os = "linux")]
-#[monoio::main(worker_threads = 1, driver = "io_uring")]
+#[monoio::main(worker_threads = 1, driver = "io_uring", enable_timer = true)]
 async fn main() {
     println!("Running client with the io_uring driver");
     run().await;
@@ -31,6 +31,7 @@ async fn run() {
         conn.write_all(buf).await.0.unwrap();
         let response = conn.read_u32_le().await.unwrap();
         println!("Received response from server: {response}");
+        monoio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
     /*
