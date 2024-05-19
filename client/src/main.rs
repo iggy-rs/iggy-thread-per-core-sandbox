@@ -4,9 +4,12 @@ async fn main() {
     println!("Running client with the io_uring driver");
     run().await;
 }
+const DATA: &[u8; 13] = b"Hello, World!";
 
 #[cfg(target_os = "linux")]
 async fn run() {
+    use std::rc::Rc;
+
     use bytes::BufMut;
     use monoio::{
         io::{AsyncReadRentExt, AsyncWriteRentExt},
@@ -20,41 +23,48 @@ async fn run() {
         .expect("[Client] Unable to connect to server");
 
     println!("[Client] Connected to server");
-    // Write down the steps
     // Create partition with random id
+    let mut rng = rand::thread_rng();
+    let partition_id = rng.gen_range(0..32);
+    let mut buf = Vec::with_capacity(8);
+    buf.put_u32_le(0);
+    buf.put_u32_le(partition_id);
+    conn.write_all(buf).await.0.unwrap();
+    let response = conn.read_u32_le().await.unwrap();
+    println!("[Client] Received response from server for create_partition command: {response}");
+
+    let mut offset: u64 = 0;
     loop {
-        let mut rng = rand::thread_rng();
-        let partition_id = rng.gen_range(0..32);
-        let mut buf = Vec::with_capacity(8);
-        buf.put_u32_le(0);
+        let mut buf = Vec::with_capacity(12 + DATA.len());
+        // Here we will continuously send data to the server
+        buf.put_u32_le(1);
         buf.put_u32_le(partition_id);
+        buf.put_u32_le(DATA.len() as u32);
+        buf.put(DATA.as_slice());
         conn.write_all(buf).await.0.unwrap();
+        // receive response from server
         let response = conn.read_u32_le().await.unwrap();
-        println!("Received response from server: {response}");
+        println!("[Client] Received response from server for send_data command: {response}");
+
+        let mut buf = Vec::with_capacity(16);
+        // Here we will continuously fetch data from the server.
+        buf.put_u32_le(2);
+        buf.put_u32_le(partition_id);
+        buf.put_u64_le(offset);
+        conn.write_all(buf).await.0.unwrap();
+        // receive response from server
+        let response = conn.read_u32_le().await.unwrap();
+        let data_len = conn.read_u64_le().await.unwrap();
+        let data = vec![0; data_len as usize];
+        let (n, data) = conn.read_exact( data).await;
+        let n = n.unwrap();
+        assert_eq!(n, data_len as usize);
+        assert_eq!(data, DATA);
+        let data = std::str::from_utf8(&data).unwrap();
+        println!(
+            "[Client] Received response from server for read_data command: {response}, data: {data}");
+        offset += 13;
+
         monoio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-
-    /*
-    // Read the response
-    let recv = conn.read_u32_le().await.unwrap();
-    if recv == 420 {
-        panic!("Partition already exists");
-    }
-    println!("Received response from server, for create partition command: {recv}");
-    */
-    // Send data to partition in a loop
-    /*
-    let data = b"Hello, World";
-    let mut buf = Vec::with_capacity(12 + data.len());
-    buf.put_u32_le(1);
-    buf.put_u32_le(partition_id);
-    buf.put_u32_le(data.len() as u32);
-    buf.put(data.as_slice());
-    conn.write_all(buf).await.0.unwrap();
-    */
-    // Read response
-    /*
-    let recv = conn.read_u32_le().await.unwrap();
-    println!("Received response from server: {recv}");
-    */
 }
