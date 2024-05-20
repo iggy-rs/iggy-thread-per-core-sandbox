@@ -37,9 +37,7 @@ fn run() {
         std::fs::create_dir_all(PARTITIONS_PATH).unwrap();
     }
 
-    //TODO - Create a type for the message sent via channel, instead of using this triplet
     let mesh = Arc::new(ShardMesh::<Message>::new(available_threads));
-
     let mut threads = Vec::new();
     for cpu in 0..available_threads {
         let mesh = mesh.clone();
