@@ -29,7 +29,6 @@ fn run() {
     use server::shards::{message::Message, shard::ShardMesh};
     use std::{rc::Rc, sync::Arc};
 
-    //use monoio::net::TcpListener;
     const ADDRESS: &str = "127.0.0.1:50000";
     let available_threads = available_parallelism().unwrap().get();
     println!("Available threads: {available_threads}");
@@ -37,30 +36,49 @@ fn run() {
         std::fs::create_dir_all(PARTITIONS_PATH).unwrap();
     }
 
-    let mesh = Arc::new(ShardMesh::<Message>::new(available_threads));
+    // - 1 because we are reserving one thread for the tcp listener.
+    let mesh = Arc::new(ShardMesh::<Message>::new(available_threads - 1));
     let mut threads = Vec::new();
     for cpu in 0..available_threads {
         let mesh = mesh.clone();
-        let thread = std::thread::spawn(move || {
-            monoio::utils::bind_to_cpu_set(Some(cpu)).unwrap();
-            let mut rt = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
-                .enable_timer()
-                .with_blocking_strategy(monoio::blocking::BlockingStrategy::ExecuteLocal)
-                .build()
-                .unwrap();
+        let thread = if cpu == 0 {
+            // Create the thread responsible for tcp connections.
+            std::thread::spawn(move || {
+                monoio::utils::bind_to_cpu_set(Some(cpu)).unwrap();
+                let mut rt = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
+                    .enable_timer()
+                    .with_blocking_strategy(monoio::blocking::BlockingStrategy::ExecuteLocal)
+                    .build()
+                    .unwrap();
 
-            let shard = Rc::new(mesh.shard(cpu));
-            rt.block_on(async move {
+                let shard = Rc::new(mesh.shard(cpu));
+                rt.block_on(async move {
+                    let listener = TcpListener::bind(ADDRESS)
+                        .unwrap_or_else(|_| panic!("[Server] Unable to bind to {ADDRESS}"));
+                    println!("[Server] Bind ready with address {ADDRESS}");
+                    listen(cpu, shard, listener)
+                        .await
+                        .map_err(|err| println!("[Server] Error listening: {err}"))
+                        .unwrap();
+                });
+            })
+        } else {
+            // Create threads responsbile for processing commands.
+            std::thread::spawn(move || {
+                monoio::utils::bind_to_cpu_set(Some(cpu)).unwrap();
+                let mut rt = monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
+                    .enable_timer()
+                    .with_blocking_strategy(monoio::blocking::BlockingStrategy::ExecuteLocal)
+                    .build()
+                    .unwrap();
+
+                let shard = Rc::new(mesh.shard(cpu));
+                rt.block_on(async move {
                 let receiver = shard.receiver().unwrap();
-                let listener = TcpListener::bind(ADDRESS)
-                    .unwrap_or_else(|_| panic!("[Server] Unable to bind to {ADDRESS}"));
-                println!("[Server] Bind ready with address {ADDRESS}");
-                monoio::select! {
-                    res = listen(cpu, shard, listener) => { res.map_err(|err| println!("[Server] Error listening: {err}")).unwrap()},
-                    _ = process_command(cpu, receiver) => {}
-                }
+                    process_command(cpu, receiver).await;
             });
-        });
+            })
+        };
         threads.push(thread);
     }
 
