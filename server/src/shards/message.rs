@@ -1,17 +1,22 @@
+use local_sync::oneshot::Sender;
+
 use crate::commands::command::Command;
 
 pub struct Message {
     pub partition_id: u32,
     pub command: Command,
-    pub descriptor: i32,
+    pub sender: Sender<Box<[u8]>>,
 }
 
 impl Message {
-    pub fn new(partition_id: u32, command: Command, descriptor: i32) -> Self {
+    pub fn new(partition_id: u32, command: Command, sender: Sender<Box<[u8]>>) -> Self {
         Self {
             partition_id,
             command,
-            descriptor,
+            sender,
         }
     }
 }
+
+unsafe impl Send for Message {}
+unsafe impl Sync for Message {}
