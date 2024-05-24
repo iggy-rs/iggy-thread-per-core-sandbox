@@ -16,7 +16,7 @@ use std::{os::fd::FromRawFd, path::Path};
 use std::{rc::Rc, thread::available_parallelism};
 
 const PARTITIONS_PATH: &str = "local_data/storage/partitions";
-const READ_LENGTH_EXACT: usize = 13;
+const READ_LENGTH_EXACT: usize = 104;
 
 #[cfg(target_os = "linux")]
 fn main() {
