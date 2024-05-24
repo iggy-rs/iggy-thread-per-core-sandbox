@@ -19,4 +19,3 @@ impl Message {
 }
 
 unsafe impl Send for Message {}
-unsafe impl Sync for Message {}

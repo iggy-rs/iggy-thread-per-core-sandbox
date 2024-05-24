@@ -15,7 +15,7 @@ use std::path::Path;
 use std::{rc::Rc, thread::available_parallelism};
 
 const PARTITIONS_PATH: &str = "local_data/storage/partitions";
-const READ_LENGTH_EXACT: usize = 13;
+const READ_LENGTH_EXACT: usize = 104;
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -138,7 +138,7 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                     let n = n.unwrap();
                     assert_eq!(n, READ_LENGTH_EXACT);
                     // Create a Box<[u8]> from the buffer.
-                    let mut bytes = [0u8; 13 + 4 + 8];
+                    let mut bytes = [0u8; READ_LENGTH_EXACT + 4 + 8];
                     bytes[..4].copy_from_slice(&69u32.to_le_bytes());
                     bytes[4..12].copy_from_slice(&n.to_le_bytes());
                     bytes[12..].copy_from_slice(buf.as_ref());
