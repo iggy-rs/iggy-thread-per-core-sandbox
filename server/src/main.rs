@@ -3,6 +3,7 @@ use monoio::{
     fs::OpenOptions,
     io::{AsyncReadRentExt, AsyncWriteRentExt},
     net::{TcpListener, TcpStream},
+    time::{self, sleep},
 };
 use server::{
     commands::command::Command,
@@ -219,7 +220,7 @@ async fn handle_connection(
         );
 
             let command = Command::SendToPartition(data);
-            let (tx, rx) = local_sync::oneshot::channel();
+            let (tx, rx) = futures::channel::oneshot::channel();
             let message = Message::new(partition_id, command, tx);
             shard.send_to(shard_id, message);
             let recv = rx.await.unwrap();
@@ -232,7 +233,7 @@ async fn handle_connection(
                 "[Server {:?}] Sending commands {command} to shards ID: {shard_id} from CPU: #{cpu}",
                 std::thread::current().id(),
             );
-            let (tx, rx) = local_sync::oneshot::channel();
+            let (tx, rx) = futures::channel::oneshot::channel();
             let message = Message::new(partition_id, command, tx);
             shard.send_to(shard_id, message);
             let recv = rx.await.unwrap();
@@ -244,7 +245,7 @@ async fn handle_connection(
             "[Server {:?}] Sending commands {command} to shards ID: {shard_id} from CPU: #{cpu}",
             std::thread::current().id(),
         );
-        let (tx, rx) = local_sync::oneshot::channel();
+        let (tx, rx) = futures::channel::oneshot::channel();
         let message = Message::new(partition_id, command, tx);
         shard.send_to(shard_id, message);
         let recv = rx.await.unwrap();

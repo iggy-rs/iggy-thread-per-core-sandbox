@@ -1,4 +1,4 @@
-use local_sync::oneshot::Sender;
+use futures::channel::oneshot::Sender;
 
 use crate::commands::command::Command;
 

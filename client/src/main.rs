@@ -71,7 +71,7 @@ async fn run() {
         let elapsed = start.elapsed().as_micros();
         total_time += elapsed;
     }
-    let avg = total_time / 6_000;
+    let avg = total_time / 10_000;
     println!("[Client] Average time taken to send and receive data: {avg} microseconds");
     CtrlC::new().unwrap().await;
 }
