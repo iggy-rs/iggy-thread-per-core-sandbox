@@ -2,7 +2,11 @@
 #[monoio::main(worker_threads = 1, driver = "io_uring", enable_timer = true)]
 async fn main() {
     println!("Running client with the io_uring driver");
-    run().await;
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        handles.push(monoio::spawn(run()));
+    }
+    futures::future::join_all(handles).await;
 }
 const DATA: &[u8; 104] = b"Hello, World!, ajsdhasjhdgasdjhgasdkjaslgaksjdgasjdhgasdjhgasdjhasgdsa, asjdhashjdgasjhdgasd. ASHDASGDJH";
 
@@ -72,5 +76,4 @@ async fn run() {
     }
     let avg_time = total_time / 10_000;
     println!("[Client] Average time taken to send and receive data: {avg_time} microseconds");
-    CtrlC::new().unwrap();
 }
