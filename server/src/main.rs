@@ -1,7 +1,7 @@
 use futures::StreamExt;
 use monoio::{
     fs::OpenOptions,
-    io::{AsyncReadRentExt, AsyncWriteRent, AsyncWriteRentExt},
+    io::{AsyncReadRentExt, AsyncWriteRentExt},
     net::{TcpListener, TcpStream},
 };
 use server::{
@@ -11,8 +11,7 @@ use server::{
         shard::{Receiver, Shard},
     },
 };
-use std::os::fd::AsRawFd;
-use std::{os::fd::FromRawFd, path::Path};
+use std::path::Path;
 use std::{rc::Rc, thread::available_parallelism};
 
 const PARTITIONS_PATH: &str = "local_data/storage/partitions";
@@ -75,35 +74,27 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
             // Safety: File descriptor might not always be valid.
             // Given a case where the thread handling the connection might close the descriptor during panic.
             // Requires further validation whether this approach is completly safe.
-            let fd = message.descriptor;
             let partition_id = message.partition_id;
             let command = message.command;
             let thread_id = std::thread::current().id();
             println!(
                 "[Server] Received commands {command} for partition {partition_id} on thread: {thread_id:?}, CPU: #{cpu}");
-            let mut stream = TcpStream::from_std(unsafe { std::net::TcpStream::from_raw_fd(fd) })
-                .map_err(|err| println!("[Server] Error creating TcpStream from fd: {err}"))
-                .unwrap();
             match command {
                 Command::CreatePartition() => {
                     println!("[Server] Creating partition {partition_id}");
                     let path = format!("{PARTITIONS_PATH}/{partition_id}");
                     let file_exists = Path::new(&path).exists();
                     if file_exists {
-                        stream
-                            .write(Box::new(420u32.to_le_bytes()))
-                            .await
-                            .0
-                            .unwrap();
+                        let sender = message.sender;
+                        sender.send(Box::new(420u32.to_le_bytes())).unwrap();
+                        continue;
                     }
                     monoio::fs::File::create(&path).await.unwrap();
                     println!("[Server] Created partition {partition_id} at path: {path}");
                     // write the response
-                    stream
-                        .write_all(Box::new(69u32.to_le_bytes()))
-                        .await
-                        .0
-                        .unwrap();
+                    let sender = message.sender;
+                    sender.send(Box::new(69u32.to_le_bytes())).unwrap();
+                    continue;
                 }
                 Command::SendToPartition(data) => {
                     let stringify_data = std::str::from_utf8(&data).unwrap();
@@ -121,7 +112,9 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                     let len = stat.len();
                     file.write_all_at(data, len).await.0.unwrap();
                     // write the response
-                    stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
+                    let sender = message.sender;
+                    sender.send(Box::new(69u32.to_le_bytes())).unwrap();
+                    continue;
                 }
                 Command::ReadFromPartition(offset) => {
                     println!("[Server] Reading from partition {partition_id}");
@@ -131,10 +124,13 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                     let (n, buf) = file.read_at(buf, offset).await;
                     let n = n.unwrap();
                     assert_eq!(n, READ_LENGTH_EXACT);
+                    let mut response_buf = Box::new([0u8; READ_LENGTH_EXACT + 4 + 8]);
+                    response_buf[..4].copy_from_slice(&69u32.to_le_bytes());
+                    response_buf[4..12].copy_from_slice(&n.to_le_bytes());
+                    response_buf[12..].copy_from_slice(buf.as_ref());
                     // write the response
-                    stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
-                    stream.write(Box::new(n.to_le_bytes())).await.0.unwrap();
-                    stream.write_all(buf).await.0.unwrap();
+                    let sender = message.sender;
+                    sender.send(response_buf).unwrap();
                 }
             }
         }
@@ -206,29 +202,35 @@ async fn handle_connection(
         );
 
             let command = Command::SendToPartition(data);
-            let fd = unsafe { libc::dup(stream.as_raw_fd()) };
-            let message = Message::new(partition_id, command, fd);
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let message = Message::new(partition_id, command, tx);
             shard.send_to(shard_id, message);
+            let recv = rx.await.unwrap();
+            stream.write_all(recv).await.0.unwrap();
             continue;
         } else if command_id == 2 {
             let offset = stream.read_u64_le().await.unwrap();
             let command = Command::ReadFromPartition(offset);
-            let fd = unsafe { libc::dup(stream.as_raw_fd()) };
             println!(
                 "[Server {:?}] Sending commands {command} to shards ID: {shard_id} from CPU: #{cpu}",
                 std::thread::current().id(),
             );
-            let message = Message::new(partition_id, command, fd);
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let message = Message::new(partition_id, command, tx);
             shard.send_to(shard_id, message);
+            let recv = rx.await.unwrap();
+            stream.write_all(recv).await.0.unwrap();
             continue;
         }
         let command = Command::from(command_id);
-        let fd = unsafe { libc::dup(stream.as_raw_fd()) };
         println!(
             "[Server {:?}] Sending commands {command} to shards ID: {shard_id} from CPU: #{cpu}",
             std::thread::current().id(),
         );
-        let message = Message::new(partition_id, command, fd);
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let message = Message::new(partition_id, command, tx);
         shard.send_to(shard_id, message);
+        let recv = rx.await.unwrap();
+        stream.write_all(recv).await.0.unwrap();
     }
 }

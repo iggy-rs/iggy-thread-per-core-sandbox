@@ -11,7 +11,8 @@ async fn run() {
     use bytes::BufMut;
     use monoio::{
         io::{AsyncReadRentExt, AsyncWriteRentExt},
-        net::TcpStream, utils::CtrlC,
+        net::TcpStream,
+        utils::CtrlC,
     };
     use rand::Rng;
     const ADDRESS: &str = "127.0.0.1:50000";
@@ -44,7 +45,7 @@ async fn run() {
         conn.write_all(buf).await.0.unwrap();
         // receive response from server
         let response = conn.read_u32_le().await.unwrap();
-        println!("[Client] Received response from server for send_data commands: {response}");
+        //println!("[Client] Received response from server for send_data commands: {response}");
 
         let mut buf = Vec::with_capacity(16);
         // Here we will continuously fetch data from the server.
@@ -61,14 +62,15 @@ async fn run() {
         assert_eq!(n, data_len as usize);
         assert_eq!(data, DATA);
         let data = std::str::from_utf8(&data).unwrap();
+        /*
         println!(
             "[Client] Received response from server for read_data commands: {response}, data: {data}");
+            */
         offset += 104;
         let elapsed = start.elapsed().as_micros();
         total_time += elapsed;
     }
     let avg_time = total_time / 10_000;
-    println!(
-        "[Client] Average time taken to send and receive data: {avg_time} microseconds");
+    println!("[Client] Average time taken to send and receive data: {avg_time} microseconds");
     CtrlC::new().unwrap();
 }
