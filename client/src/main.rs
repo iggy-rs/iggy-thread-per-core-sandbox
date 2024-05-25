@@ -1,8 +1,14 @@
 #[cfg(target_os = "linux")]
 #[monoio::main(worker_threads = 1, driver = "io_uring", enable_timer = true)]
 async fn main() {
+
     println!("Running client with the io_uring driver");
-    run().await;
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        handles.push(monoio::spawn(run()));
+    }
+
+    futures::future::join_all(handles).await;
 }
 const DATA: &[u8; 104] = b"Hello, World!, Hello to this world of ours! Let's make the message longer, closers to 100 bytes! hundred";
 
@@ -14,7 +20,6 @@ async fn run() {
         net::TcpStream,
     };
 
-    use monoio::utils::CtrlC;
     use rand::Rng;
     const ADDRESS: &str = "127.0.0.1:50000";
 
@@ -73,5 +78,4 @@ async fn run() {
     }
     let avg = total_time / 10_000;
     println!("[Client] Average time taken to send and receive data: {avg} microseconds");
-    CtrlC::new().unwrap().await;
 }
