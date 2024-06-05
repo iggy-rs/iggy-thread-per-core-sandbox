@@ -12,3 +12,4 @@ rand = "0.8.5"
 libc = "=0.2.155"
 serde = { version = "1.0.200", features = ["derive", "rc"] }
 sharded_queue = "2.0.1"
+fastmurmur3 = "0.2.0"

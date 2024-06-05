@@ -1,7 +1,7 @@
 use futures::StreamExt;
 use monoio::{
     fs::OpenOptions,
-    io::{AsyncReadRentExt, AsyncWriteRent, AsyncWriteRentExt},
+    io::{AsyncReadRentExt, AsyncWriteRentExt},
     net::{TcpListener, TcpStream},
 };
 use server::{
@@ -11,12 +11,11 @@ use server::{
         shard::{Receiver, Shard},
     },
 };
-use std::os::fd::AsRawFd;
-use std::{os::fd::FromRawFd, path::Path};
+use std::{io::Cursor, path::Path};
 use std::{rc::Rc, thread::available_parallelism};
 
 const PARTITIONS_PATH: &str = "local_data/storage/partitions";
-const READ_LENGTH_EXACT: usize = 13;
+const READ_LENGTH_EXACT: usize = 104;
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -56,7 +55,7 @@ fn run() {
                     .unwrap_or_else(|_| panic!("[Server] Unable to bind to {ADDRESS}"));
                 println!("[Server] Bind ready with address {ADDRESS}");
                 monoio::select! {
-                    res = listen(cpu, shard, listener) => { res.map_err(|err| println!("[Server] Error listening: {err}")).unwrap()},
+                    res = listen(cpu, available_threads, shard, listener) => { res.map_err(|err| println!("[Server] Error listening: {err}")).unwrap()},
                     _ = process_command(cpu, receiver) => {}
                 }
             });
@@ -75,35 +74,27 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
             // Safety: File descriptor might not always be valid.
             // Given a case where the thread handling the connection might close the descriptor during panic.
             // Requires further validation whether this approach is completly safe.
-            let fd = message.descriptor;
             let partition_id = message.partition_id;
             let command = message.command;
             let thread_id = std::thread::current().id();
             println!(
                 "[Server] Received commands {command} for partition {partition_id} on thread: {thread_id:?}, CPU: #{cpu}");
-            let mut stream = TcpStream::from_std(unsafe { std::net::TcpStream::from_raw_fd(fd) })
-                .map_err(|err| println!("[Server] Error creating TcpStream from fd: {err}"))
-                .unwrap();
             match command {
                 Command::CreatePartition() => {
                     println!("[Server] Creating partition {partition_id}");
                     let path = format!("{PARTITIONS_PATH}/{partition_id}");
                     let file_exists = Path::new(&path).exists();
                     if file_exists {
-                        stream
-                            .write(Box::new(420u32.to_le_bytes()))
-                            .await
-                            .0
-                            .unwrap();
+                        let sender = message.sender;
+                        sender.send(Box::new(420u32.to_le_bytes())).unwrap();
+                        continue;
                     }
                     monoio::fs::File::create(&path).await.unwrap();
                     println!("[Server] Created partition {partition_id} at path: {path}");
                     // write the response
-                    stream
-                        .write_all(Box::new(69u32.to_le_bytes()))
-                        .await
-                        .0
-                        .unwrap();
+                    let sender = message.sender;
+                    sender.send(Box::new(69u32.to_le_bytes())).unwrap();
+                    continue;
                 }
                 Command::SendToPartition(data) => {
                     let stringify_data = std::str::from_utf8(&data).unwrap();
@@ -121,7 +112,9 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                     let len = stat.len();
                     file.write_all_at(data, len).await.0.unwrap();
                     // write the response
-                    stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
+                    let sender = message.sender;
+                    sender.send(Box::new(69u32.to_le_bytes())).unwrap();
+                    continue;
                 }
                 Command::ReadFromPartition(offset) => {
                     println!("[Server] Reading from partition {partition_id}");
@@ -131,10 +124,13 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
                     let (n, buf) = file.read_at(buf, offset).await;
                     let n = n.unwrap();
                     assert_eq!(n, READ_LENGTH_EXACT);
+                    let mut response_buf = Box::new([0u8; READ_LENGTH_EXACT + 4 + 8]);
+                    response_buf[..4].copy_from_slice(&69u32.to_le_bytes());
+                    response_buf[4..12].copy_from_slice(&n.to_le_bytes());
+                    response_buf[12..].copy_from_slice(buf.as_ref());
                     // write the response
-                    stream.write(Box::new(69u32.to_le_bytes())).await.0.unwrap();
-                    stream.write(Box::new(n.to_le_bytes())).await.0.unwrap();
-                    stream.write_all(buf).await.0.unwrap();
+                    let sender = message.sender;
+                    sender.send(response_buf).unwrap();
                 }
             }
         }
@@ -143,6 +139,7 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
 
 async fn listen(
     cpu: usize,
+    available_threads: usize,
     shard: Rc<Shard<Message>>,
     listener: TcpListener,
 ) -> std::io::Result<()> {
@@ -152,7 +149,7 @@ async fn listen(
             Ok((stream, _)) => {
                 println!("[Server] Accepted connection on CPU: #{cpu}");
                 monoio::spawn(async move {
-                    if let Err(e) = handle_connection(cpu, shard, stream).await {
+                    if let Err(e) = handle_connection(cpu, available_threads, shard, stream).await {
                         println!("Error handling connection on CPU: #{cpu}: {e}")
                     }
                 });
@@ -165,12 +162,17 @@ async fn listen(
     }
 }
 
+fn create_hash(payload: &[u8]) -> usize {
+    let clamp = 2usize.pow(32) as u128;
+    (fastmurmur3::hash(payload) % clamp) as usize
+}
+
 async fn handle_connection(
     cpu: usize,
+    threads: usize,
     shard: Rc<Shard<Message>>,
     mut stream: TcpStream,
 ) -> Result<(), std::io::Error> {
-    let threads = available_parallelism().unwrap().get();
     loop {
         let buf = Box::new([0u8; 4]);
         let (n, buf) = stream.read_exact(buf).await;
@@ -185,11 +187,14 @@ async fn handle_connection(
         let (n, buf) = stream.read_exact(buf).await;
         let _ = n?;
         let partition_id = u32::from_le_bytes(*buf);
+        let partition_name = format!("partition-{}", partition_id);
+        let hash = create_hash(&partition_name.as_bytes());
+        println!("partition_id: {}, hash: {}", partition_id, hash);
+        let shard_id = hash % threads;
         println!(
         "[Server {:?}] Received commands with ID: {command_id} for partition {partition_id} on CPU: #{cpu}",
         std::thread::current().id(),
     );
-        let shard_id = partition_id as usize % threads;
         if command_id == 1 {
             let (n, buf) = stream.read_exact(buf).await;
             let _ = n?;
@@ -206,29 +211,35 @@ async fn handle_connection(
         );
 
             let command = Command::SendToPartition(data);
-            let fd = unsafe { libc::dup(stream.as_raw_fd()) };
-            let message = Message::new(partition_id, command, fd);
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let message = Message::new(partition_id, command, tx);
             shard.send_to(shard_id, message);
+            let recv = rx.await.unwrap();
+            stream.write_all(recv).await.0.unwrap();
             continue;
         } else if command_id == 2 {
             let offset = stream.read_u64_le().await.unwrap();
             let command = Command::ReadFromPartition(offset);
-            let fd = unsafe { libc::dup(stream.as_raw_fd()) };
             println!(
                 "[Server {:?}] Sending commands {command} to shards ID: {shard_id} from CPU: #{cpu}",
                 std::thread::current().id(),
             );
-            let message = Message::new(partition_id, command, fd);
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let message = Message::new(partition_id, command, tx);
             shard.send_to(shard_id, message);
+            let recv = rx.await.unwrap();
+            stream.write_all(recv).await.0.unwrap();
             continue;
         }
         let command = Command::from(command_id);
-        let fd = unsafe { libc::dup(stream.as_raw_fd()) };
         println!(
             "[Server {:?}] Sending commands {command} to shards ID: {shard_id} from CPU: #{cpu}",
             std::thread::current().id(),
         );
-        let message = Message::new(partition_id, command, fd);
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let message = Message::new(partition_id, command, tx);
         shard.send_to(shard_id, message);
+        let recv = rx.await.unwrap();
+        stream.write_all(recv).await.0.unwrap();
     }
 }

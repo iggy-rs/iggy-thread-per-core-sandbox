@@ -72,6 +72,7 @@ name = "client"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "futures",
  "monoio",
  "monoio-native-tls",
  "rand 0.9.0-alpha.1",
@@ -119,6 +120,12 @@ dependencies = [
  "libc",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "fastmurmur3"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d7e9bc68be4cdabbb8938140b01a8b5bc1191937f2c7e7ecc2fcebbe2d749df"
 
 [[package]]
 name = "fastrand"
@@ -699,6 +706,7 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "fastmurmur3",
  "futures",
  "libc",
  "monoio",

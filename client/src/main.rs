@@ -2,9 +2,13 @@
 #[monoio::main(worker_threads = 1, driver = "io_uring", enable_timer = true)]
 async fn main() {
     println!("Running client with the io_uring driver");
-    run().await;
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        handles.push(monoio::spawn(run()));
+    }
+    futures::future::join_all(handles).await;
 }
-const DATA: &[u8; 13] = b"Hello, World!";
+const DATA: &[u8; 104] = b"Hello, World!, ajsdhasjhdgasdjhgasdkjaslgaksjdgasjdhgasdjhgasdjhasgdsa, asjdhashjdgasjhdgasd. ASHDASGDJH";
 
 #[cfg(target_os = "linux")]
 async fn run() {
@@ -12,6 +16,7 @@ async fn run() {
     use monoio::{
         io::{AsyncReadRentExt, AsyncWriteRentExt},
         net::TcpStream,
+        utils::CtrlC,
     };
     use rand::Rng;
     const ADDRESS: &str = "127.0.0.1:50000";
@@ -32,7 +37,9 @@ async fn run() {
     println!("[Client] Received response from server for create_partition commands: {response}");
 
     let mut offset: u64 = 0;
-    loop {
+    let mut total_time = 0;
+    for _ in 0..10_000 {
+        let start = std::time::Instant::now();
         let mut buf = Vec::with_capacity(12 + DATA.len());
         // Here we will continuously send data to the server
         buf.put_u32_le(1);
@@ -42,7 +49,7 @@ async fn run() {
         conn.write_all(buf).await.0.unwrap();
         // receive response from server
         let response = conn.read_u32_le().await.unwrap();
-        println!("[Client] Received response from server for send_data commands: {response}");
+        //println!("[Client] Received response from server for send_data commands: {response}");
 
         let mut buf = Vec::with_capacity(16);
         // Here we will continuously fetch data from the server.
@@ -59,10 +66,14 @@ async fn run() {
         assert_eq!(n, data_len as usize);
         assert_eq!(data, DATA);
         let data = std::str::from_utf8(&data).unwrap();
+        /*
         println!(
             "[Client] Received response from server for read_data commands: {response}, data: {data}");
-        offset += 13;
-
-        monoio::time::sleep(std::time::Duration::from_millis(500)).await;
+            */
+        offset += 104;
+        let elapsed = start.elapsed().as_micros();
+        total_time += elapsed;
     }
+    let avg_time = total_time / 10_000;
+    println!("[Client] Average time taken to send and receive data: {avg_time} microseconds");
 }
