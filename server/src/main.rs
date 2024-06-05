@@ -11,7 +11,7 @@ use server::{
         shard::{Receiver, Shard},
     },
 };
-use std::path::Path;
+use std::{io::Cursor, path::Path};
 use std::{rc::Rc, thread::available_parallelism};
 
 const PARTITIONS_PATH: &str = "local_data/storage/partitions";
@@ -55,7 +55,7 @@ fn run() {
                     .unwrap_or_else(|_| panic!("[Server] Unable to bind to {ADDRESS}"));
                 println!("[Server] Bind ready with address {ADDRESS}");
                 monoio::select! {
-                    res = listen(cpu, shard, listener) => { res.map_err(|err| println!("[Server] Error listening: {err}")).unwrap()},
+                    res = listen(cpu, available_threads, shard, listener) => { res.map_err(|err| println!("[Server] Error listening: {err}")).unwrap()},
                     _ = process_command(cpu, receiver) => {}
                 }
             });
@@ -139,6 +139,7 @@ async fn process_command(cpu: usize, mut receiver: Receiver<Message>) {
 
 async fn listen(
     cpu: usize,
+    available_threads: usize,
     shard: Rc<Shard<Message>>,
     listener: TcpListener,
 ) -> std::io::Result<()> {
@@ -148,7 +149,7 @@ async fn listen(
             Ok((stream, _)) => {
                 println!("[Server] Accepted connection on CPU: #{cpu}");
                 monoio::spawn(async move {
-                    if let Err(e) = handle_connection(cpu, shard, stream).await {
+                    if let Err(e) = handle_connection(cpu, available_threads, shard, stream).await {
                         println!("Error handling connection on CPU: #{cpu}: {e}")
                     }
                 });
@@ -161,12 +162,17 @@ async fn listen(
     }
 }
 
+fn create_hash(payload: &[u8]) -> usize {
+    let clamp = 2usize.pow(32) as u128;
+    (fastmurmur3::hash(payload) % clamp) as usize
+}
+
 async fn handle_connection(
     cpu: usize,
+    threads: usize,
     shard: Rc<Shard<Message>>,
     mut stream: TcpStream,
 ) -> Result<(), std::io::Error> {
-    let threads = available_parallelism().unwrap().get();
     loop {
         let buf = Box::new([0u8; 4]);
         let (n, buf) = stream.read_exact(buf).await;
@@ -181,11 +187,14 @@ async fn handle_connection(
         let (n, buf) = stream.read_exact(buf).await;
         let _ = n?;
         let partition_id = u32::from_le_bytes(*buf);
+        let partition_name = format!("partition-{}", partition_id);
+        let hash = create_hash(&partition_name.as_bytes());
+        println!("partition_id: {}, hash: {}", partition_id, hash);
+        let shard_id = hash % threads;
         println!(
         "[Server {:?}] Received commands with ID: {command_id} for partition {partition_id} on CPU: #{cpu}",
         std::thread::current().id(),
     );
-        let shard_id = partition_id as usize % threads;
         if command_id == 1 {
             let (n, buf) = stream.read_exact(buf).await;
             let _ = n?;
