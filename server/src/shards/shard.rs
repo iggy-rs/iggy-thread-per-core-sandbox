@@ -121,21 +121,16 @@ impl<T> Stream for Receiver<T> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.channel.waker.register(cx.waker());
-
-        let old = self
-            .channel
-            .task_queue
-            .load(std::sync::atomic::Ordering::Relaxed);
-
-        if old > 0 {
-            self.channel
-                .task_queue
-                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            let item = self.channel.queue.pop_front_or_spin_wait_item();
-            Poll::Ready(Some(item))
-        } else {
-            Poll::Pending
+        let old = self.channel.task_queue.load(std::sync::atomic::Ordering::Relaxed);
+        if old == 0 {
+            self.channel.waker.register(cx.waker());
+            return Poll::Pending;
         }
+
+        assert!(old > 0);
+        self.channel.task_queue.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        let item = self.channel.queue.pop_front_or_spin_wait_item();
+        Poll::Ready(Some(item))
     }
 }
+
